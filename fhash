@@ -1,0 +1,155 @@
+#!/bin/bash
+hashes_root="/mnt/user/hashes/"
+
+
+base="/mnt/"
+share=""
+
+max_hash_age=60
+
+ignore_shares=("Downloads", "hashes", "domains", "internxt", "storj", "appdata", "nextcloud", "system", ".Recycle.Bin", "lancache", "rsnapshot")
+ignore_folder=("Files/Downloads", ".Recycle.Bin", )
+
+
+hash (){
+	data_folder="$1"
+	#echo "$data_folder"
+	#echo "$!"
+	if [ ! -d "$data_folder" ]; then
+		return
+	fi
+	
+
+	if [[ $data_folder == /mnt/fastcache* ]]; then
+		dirtwo="$(echo "$data_folder" | sed 's/^\/mnt\/fastcache\///')"
+	elif [[ $data_folder == /mnt/cache* ]]; then
+		dirtwo="$(echo "$data_folder" | sed 's/^\/mnt\/cache\///')"
+	elif [[ $data_folder == /mnt/disk* ]]; then
+		dirtwo="$(echo "$data_folder" | sed 's/^\/mnt\/disk[0-9]\///')"
+	fi
+
+	hash_subfolder="$hashes_root"/"$dirtwo"
+
+	folder="$(echo "$dirtwo" | sed 's/\/$//')"
+	for f in "${ignore_shares[@]}"; do
+		f="$(echo "$f" | sed 's/,$//')"
+		if [[ "$folder" == "$f" ]]; then
+			return 
+		fi
+	done
+	cd "$data_folder"
+	while read -d '' data_file; do
+		ignore_it=false
+		for f in "${ignore_folder[@]}"; do
+			f="$(echo "$f" | sed 's/,$//')"
+			
+			if [[ "$data_file" == *"$f"* ]]; then
+				ignore_it=true
+			fi
+		done
+
+		if [ "$ignore_it" = true ]; then
+			continue;
+		fi
+		hash_file="$(echo "${data_file}" | sed 's/^\.//')"
+		hash_file="$hash_subfolder""$hash_file"".hash"
+		hash_folder="$(dirname "$hash_file")"
+		time="$(date +%s)"
+		modtime="$(stat -c %Y "$data_file")"
+		
+		#echo $hash_file
+		if [ ! -f "$hash_file" ]; then
+			if [ ! -d "$hash_folder" ]; then
+				mkdir -p "$hash_folder"
+			fi
+			hash_file "$data_folder""$(echo "${data_file}" | sed 's/^\.//')" "$hash_file" "no previous hash"
+
+		else #file already has a hash
+			hash_data="$( tail -n 1 "$hash_file" )"
+
+			#echo "$hash_data"
+			IFS=',' read -ra hash_data <<< "$hash_data"
+			#for f in "${!hash_data[@]}"; do
+				#echo "${hash_data[$f]}"
+
+			#done
+
+			old_hash="${hash_data[0]}"
+			old_time="${hash_data[1]}"
+			old_modtime="${hash_data[2]}"
+			if [[ $modtime != $old_modtime ]]; then
+				hash="$(hash_file "$data_file" "$hash_file" "mod times different")"
+
+			elif (( ($time - $old_time) > $max_hash_age*24*60*60 )); then
+				hash="$(hash_file "$data_file" "$hash_file" "hash is outdate")"
+				IFS=' ' read -ra ADDR <<< "$hash"
+				hash_only="${ADDR[0]}"
+				if [ "$hash_only" != "$old_hash" ]; then
+					echo "DIFFERING HASH VALUES
+					"
+					echo "$data_file
+					"
+					echo "DIFFERING HASH VALUES"
+				else
+					"$hash_only = $old_hash"
+				fi
+			#else
+				#echo "hash is up to date"
+			fi
+		fi
+	done < <(find -type f -print0)
+
+
+}
+
+
+##########################################################################################
+# TO DO
+# 
+# Write a function to calculate hash 'coverage' of files
+# number of files and size
+##########################################################################################
+
+
+hash_file (){ # $data_file $hash_file
+			data_file=$1
+			hash_file=$2
+			reason=$3
+			#echo "$data_file"
+			hash="$(md5sum "$data_file")"
+			IFS=' ' read -ra ADDR <<< "$hash"
+			hash_only="${ADDR[0]}"
+			echo "$hash_only,$time,$modtime" >> "$hash_file"
+			echo "$hash"
+}
+
+
+handle_folder (){
+	dir=$1
+	if [[ "$share_folder" == "" ]]; then
+		cd $dir
+		
+		while read -d '' d; do
+			shares="$(echo "$d" | sed 's/^\.\///')"
+			hash $dir$shares
+		done < <(find -type d -maxdepth 1 -mindepth 1 -print0)
+	else
+		hash $dir$share_folder
+	fi
+	echo "done with $dir"
+}
+
+if [[ $1 = "progress" ]]; then
+	echo ""
+else 
+	for i in {0..7}; do
+		if [[ $i == "0" ]]; then
+			path=""$base"cache/"
+		elif [[ $i == "7" ]]; then
+			path=""$base"fastcache/"
+		else
+			path=""$base"disk$i/"
+		fi
+		handle_folder $path &
+	done
+fi
