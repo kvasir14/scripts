@@ -1,0 +1,36 @@
+#!/bin/bash
+
+host="192.168.2.7"
+
+print_current (){
+
+	output="$(ipmitool -H "$host" -U ADMIN -P ADMIN raw 0x30 0x45 0x00 | tr -d '[:space:]')"
+
+	if [ "$output" = "00" ]; then
+		echo "standard"
+	elif [ "$output" = "01" ]; then
+		echo "full"
+	elif [ "$output" = "02" ]; then
+		echo "optimal"
+	elif [ "$output" = "04" ]; then
+		echo "heavyIO"
+	fi
+}
+if [ "$1" = "standard" ]; then
+	ipmitool -H "$host" -U ADMIN -P ADMIN raw 0x30 0x45 0x01 0x00 > /dev/null
+elif [ "$1" = "full" ]; then
+	ipmitool -H "$host" -U ADMIN -P ADMIN raw 0x30 0x45 0x01 0x01 > /dev/null
+elif [ "$1" = "optimal" ]; then
+	ipmitool -H "$host" -U ADMIN -P ADMIN raw 0x30 0x45 0x01 0x02 > /dev/null
+elif [ "$1" = "heavyIO" ] || [ "$1" = "heavy" ] || [ "$1" = "heavyio" ] || [ "$1" = "heavy io" ]; then
+	ipmitool -H "$host" -U ADMIN -P ADMIN raw 0x30 0x45 0x01 0x04 > /dev/null
+elif [ "$1" = "current" ]; then
+	print_current
+#elif [ "$1" = "help" ] || [ "$1" = "--help" ]; then
+	#echo "standard full optimal heavyIO"
+else
+	echo "standard full optimal heavyIO"
+	print_current
+
+fi
+
