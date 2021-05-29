@@ -1,0 +1,532 @@
+#!/bin/bash
+
+#read from file
+numbers=( )
+ids=( )
+hosts=( )
+
+#auto generated
+names=( )
+ports=( )
+
+while IFS= read -r line; do
+	if [[ "$line" == \#* ]]; then
+		continue;
+	fi
+	number="$( echo "$line" | grep -Eoe '^[0-9]+' )"
+	host="$( echo "$line" | grep -Eoe '([(A-Za-z]+@[A-Za-z\.0-9]+)|(localhost)' )"
+	id="$(echo "$line" | grep -Eoe '[A-Za-z0-9]{40}' )"
+	id="$(echo "$id" | tr -d '[:blank:]')"
+	port=$((number+12340))
+	name="internxt$number"
+
+	numbers+=("$number")
+	hosts+=("$host")
+	ids+=("$id")
+	ports+=("$port")
+	names+=("$name")
+done < /mnt/user/transcode/internxt-api-keys.txt
+
+
+#echo "${numbers[@]}"
+#echo "${names[@]}"
+#echo "${ids[@]}"
+#echo "${ports[@]}"
+#echo "${hosts[@]}"
+
+if [ ! "${#numbers[@]}" -eq "${#names[@]}" ] || [ ! "${#names[@]}" -eq "${#ids[@]}" ] || [ ! "${#ids[@]}" -eq "${#ports[@]}" ] || [ ! "${#ports[@]}" -eq "${#hosts[@]}" ]; then
+	echo "arrays not the same length"
+	echo "get fucked"
+	exit
+fi
+
+
+get_index () {
+	for i in "${!names[@]}"; do
+		if [[ "${names[$i]}" = "$1" ]]; then
+			echo "${i}";
+		fi
+	done
+}
+
+#this just executes anything it's passed
+raw () {
+	"${@}"
+}
+
+run_local_or_ssh () {
+	if [[ "$1" == "localhost" ]]; then
+		"${@:2}"
+	else
+		ssh "$1" "$(typeset -f $2); ${@:2}"
+	fi
+}
+
+
+start_worker () {
+	if ! echo "$(docker ps -a --format '{{.Names}}' -f status=running)" | grep -iqE "^internxt$1$"; then
+		#log_this $1 "start: starting $1"
+		docker start internxt$1
+	#else
+		#log_this $1 "start: attempting to start $1 config only"
+	fi
+	startresult="$(docker exec internxt$1 xcore start --config "/home/money/.xcore/configs/$2.json" 2>&1)"
+	#echo "$startresult"
+	counter=0;
+
+	while [[ ! "$startresult" =~ starting.node.with.config.at ]] && [[ ! "$startresult" =~ is.already.running ]]; do
+		echo "trying to start"
+		startresult="$(docker exec internxt$1 xcore start --config "/home/money/.xcore/configs/$2.json")"
+		#echo "$startresult"
+		counter=$((counter + 1))
+		if (( counter > 10 )); then
+			break
+		fi
+		#sleep 1
+	done;
+	if [[ "$startresult" =~ starting.node.with.config.at ]] || [[ "$startresult" =~ is.already.running ]]; then
+		echo "sucessfully started $1"
+	fi
+}
+
+start (){
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} start_worker "$1" "${ids[$(get_index internxt$1)]}"
+}
+
+create_worker () {
+	docker pull portnumber53/internxt-core-daemon:latest
+	docker stop "$2"
+	docker rm "$2"
+	docker run -d --name $2 -p "$3":"$3" -v /mnt/user/internxt/node$1/data/:/data -v /mnt/user/internxt/node$1/appdata/:/home/money/.xcore/ portnumber53/internxt-core-daemon:latest
+}
+
+create () {
+
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} create_worker $1 "${names[$(get_index internxt$1)]}" "${ports[$(get_index internxt$1)]}" "${ids[$(get_index internxt$1)]}"
+	start $1
+	
+}
+
+init_worker () {
+
+	docker exec -it internxt$1 xcore create --inxt 0x570D735FBea549Ebff09BF1BdA778145362018dA --storage /data/ --size 1TB --rpcaddress 24.253.229.106 --rpcport "$2"  --noedit
+}
+
+
+#this won't work without an existing port, which is difficult since arrays have to be same size
+init () {
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} init_worker $1 "${ports[$(get_index internxt$1)]}"
+	echo "ADD ID TO XCORE FILE AND RUN BINSYNC"
+
+}
+status_worker (){
+	docker exec -t internxt$1 xcore status
+}
+
+status () {
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw docker exec -t internxt$1 xcore status
+}
+
+json () {
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw docker exec -t internxt$1 xcore status -j
+
+}
+
+stop_worker () {
+	if echo "$(docker ps -a --format '{{.Names}}' -f status=running)" | grep -iqE "^internxt$1$"; then
+		docker stop internxt$1
+	fi
+}
+
+stop () {
+	#log_this $1 "stop: stopping $1"
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw stop_worker "$1" "$host"
+}
+
+pause () {
+	#log_this $1 "pause: pausing $1"
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw docker pause internxt$1
+}
+
+resume () {
+	#log_this $1 "resume: resuming $1"
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw docker unpause internxt$1
+}
+
+restart () {
+	#log_this $1 "restart: restarting $1"
+	stop $1
+	start $1 "${ids[$1]}"
+		
+}
+
+uptime_worker_old () {
+	name="internxt$1"
+	#echo "$1"
+	cRunning="$(docker ps -a --format '{{.Names}}' -f status=running)"
+	#echo "$cRunning"
+	if echo "$cRunning" | grep -iqE "^$name$"; then
+		#echo "true"
+		uptime="$(docker inspect -f '{{ .State }}' $name)"
+		#echo "$uptime" 
+		IFS=' ' read -ra uptime_split <<< "$uptime"
+		if [[ "$2" == "localhost" ]]; then
+			uptime=${uptime_split[9]}
+		else
+			uptime=${uptime_split[8]}
+		fi
+		echo "$uptime" 
+	else
+		echo "NOT RUNNING"
+	fi
+
+}
+
+uptime_worker (){
+	name="internxt$1"
+	#echo "$1"
+	cRunning="$(docker ps -a --format '{{.Names}}' -f status=running)"
+	#echo "$cRunning"
+	if echo "$cRunning" | grep -iqE "^$name$"; then
+		#echo "true"
+		uptime="$(docker inspect $name | grep "StartedAt")"
+		uptime=${uptime%\"*}
+		uptime=${uptime##*\"}
+		echo "$uptime" 
+	else
+		echo "NOT RUNNING"
+	fi
+			
+}
+
+uptime () {
+	#uptime2 $1 $host
+	host="${hosts[$(get_index internxt$1)]}"
+	run_local_or_ssh "$host" uptime_worker $1 "$host"
+}
+
+size_worker() {
+	size=0
+	output="$(run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw du -sb /mnt/user/internxt/node$1)"
+	padded="$(printf "%02d\n" $1)"
+	size="$(echo "$output" | cut -f1 /dev/stdin)"
+	echo "$size"
+	curl -s -i -XPOST 'http://192.168.2.6:8086/write?db=internxt' --data-binary "size,host=internxt$padded,region=us-central value=$size"  > /dev/null
+	#wait
+}
+
+size () {
+	sizetotal=0
+	oldsizetotal=0
+	sizetotalisgood=true;
+	for i in "${numbers[@]}"; do
+		size=0;
+		size="$(size_worker "$i")"
+		echo -e $i'\t'$size
+		oldsizetotal=$sizetotal
+		sizetotal=$((sizetotal+size))
+		if [[ $sizetotal -eq $oldsizetotal ]] || [[ $size -eq 0 ]] ; then
+			sizetotalisgood=false
+		fi
+	done
+	#wait
+
+	echo "$sizetotal"
+	echo "$sizetotalisgood"
+	if [ "$sizetotalisgood"  = true ]; then
+		curl -s -i -XPOST 'http://192.168.2.6:8086/write?db=internxt' --data-binary "size,host=total,region=us-central total=$sizetotal"  > /dev/null
+	fi
+}
+
+size_cluster_worker () {
+	sizetotal=0
+	oldsizetotal=0
+	sizetotalisgood=true;
+	for i in "${!hosts[@]}"; do
+		size=0;
+		if [[ "${hosts[$i]}" == "$1" ]]; then
+			echo "calculating "${numbers[$i]}"" >&2
+			size="$(size_worker "${numbers[$i]}")"
+			echo -e ${names[$i]}'\t'$size >&2
+			oldsizetotal=$sizetotal
+			sizetotal=$((sizetotal+size))
+			if [[ $sizetotal -eq $oldsizetotal ]] || [[ $size -eq 0 ]] ; then
+				sizetotalisgood=false
+			fi
+		fi
+		
+	done
+	echo "$sizetotalisgood"
+	if [ $sizetotalisgood ]; then
+		size_cluster_worker[$2]=$sizetotal
+	else
+		size_cluster_worker[$2]=0
+	fi
+	return 0 #sucessful
+}
+
+
+size_new (){
+	sizetotal=0
+	oldsizetotal=0
+	sizetotalisgood=true;
+
+	cluster_sizes=(0 0 0)
+
+	size="$(size_cluster_worker "localhost" 0)" &
+	#size_cluster_worker "eric@192.168.2.2" 1 &
+	#size_cluster_worker "eric@192.168.2.94" 2 &
+	
+	wait
+
+
+	echo "$size"
+
+}
+
+
+docker_status_worker () {
+	name="internxt$1"
+    cRunning="$(docker ps -a --format '{{.Names}}' -f status=running)"
+	#echo "$cRunning"
+	if echo "$cRunning" | grep -iqE "^$name$"; then
+
+		status="$(docker ps -a --format '{{ .Names}} {{.Status}}' | grep -iE "^$name ")"
+		#echo "$status"
+		if [[ "$status" =~ Up.About.a.minute ]] || [[ "$status" =~ Up.[0-5].minute ]] || [[ "$status" =~ seconds ]]; then
+			#log_this $1 "check_docker_status: start config on $1 since the container has less than 5 mins of uptime"
+			echo "start"
+		fi
+	else
+		#log_this $1 "check_docker_status: start $1 since it wasn't running"
+		start "$1"
+		echo "start"
+		a=1
+	fi
+	#echo "nothing"
+}
+
+docker_status () {
+	result="$(run_local_or_ssh ${hosts[$(get_index internxt$1)]} docker_status_worker "$1")"
+	#echo "$result"
+	if [[ "$result" == "start" ]]; then
+		#echo "start"
+		start "$1"
+	fi
+}
+
+check_logs () {
+	cd /mnt/user/internxt/node$1/appdata/logs
+	logfile="`ls -t | head -1`"
+	time="$(date +%s)"
+	modtime="$(stat -c %Y "$logfile")"
+
+	cutoff=$(( 60 * 10 ))
+	if (( $time - $modtime > $cutoff )); then
+		a=2 #delete this
+		#log_this $1 "check_logs: (NOT) restarting $1 since it log hasn't been updated in $cutoff"
+		#log_this $1 "check_logs: restarting $1 since it log hasn't been updated in $cutoff"
+		#xcore restart $1
+	fi
+
+}
+
+check (){
+	#check_logs $1
+	docker_status $1
+}
+
+soft_restart_worker () {
+	name="internxt$1"
+    cRunning="$(docker ps -a --format '{{.Names}}' -f status=running)"
+	if echo "$cRunning" | grep -iqE "^$name$"; then
+		status="$(docker ps -a --format '{{ .Names}} {{.Status}}' | grep -iE "^$name ")"
+		if [[ "$status" =~ Up.[0-9]+.hours? ]] || [[ "$status" =~ Up.[0-9]+.days? ]]; then
+			#log_this $1 "soft_restart: restart $1 since it's been up at least an hour"
+			echo "restart"
+		fi
+	else
+		#log_this $1 "soft_restart: start $1 since it wasn't running"
+		echo "start"
+	fi
+}
+
+soft_restart () {
+	#this hasn't been updated with new way of handling localhost/remote functions. new method can't pass multiple functions.
+	#maybe make a "pass_two" function, that passes the first two things and runs the second or something
+	#result="$(run_local_or_ssh ${hosts[$(get_index internxt$1)]} "$(typeset -f soft_restart_worker start restart); soft_restart_worker $1")"
+	if [[ "$result" == "start" ]]; then
+		start "$1"
+	elif [[ "$result" == "restart" ]]; then
+		restart "$1"
+	fi
+	
+}
+
+#custom logging is outdated ever since I moved some of the nodes off main server
+log_this () {
+	folder="/mnt/user/internxt/node$1/appdata/mylogs"
+	if [ ! -d "$folder" ]; then
+		mkdir -p "$folder"
+	fi
+	cd "$folder"
+	file="$(date +"%Y-%m-%d").txt"
+	echo "$(date +"%Y-%m-%d"@%H.%M.%S) - $1 - $2" >> "$file"
+	log_this_all "$1" "$2"
+}
+
+log_this_all () {
+	folder="/mnt/user/internxt/mylogs"
+	if [ ! -d "$folder" ]; then
+		mkdir -p "$folder"
+	fi
+	cd "$folder"
+	file="$(date +"%Y-%m-%d").txt"
+	echo "$(date +"%Y-%m-%d"@%H.%M.%S) - $1 - $2" >> "$file"
+}
+
+logs_worker () {
+	cd /mnt/user/internxt/node$1/appdata/logs
+	tail -f "`ls -t | head -1`"
+	#less --chop-long-lines +F "`ls -t | head -1`"
+}
+
+logs () {
+	if [ "${hosts[$(get_index internxt$1)]}" = "localhost" ]; then
+		cd /mnt/user/internxt/node$1/appdata/logs
+		less --chop-long-lines +F "`ls -t | head -1`"
+	else
+		run_local_or_ssh ${hosts[$(get_index internxt$1)]} logs_worker $1
+	fi
+}
+
+if [ "$1" = "logs" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		logs $2
+	else
+		echo "invalid node number"
+	fi
+elif [ "$1" = "mylogs" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		cd /mnt/user/internxt/node$2/appdata/mylogs
+		less --chop-long-lines +F "`ls -t | head -1`"
+	else
+		cd /mnt/user/internxt/mylogs
+		less --chop-long-lines +F "`ls -t | head -1`"
+	fi
+#elif [ "$1" = "log_this" ]; then
+	#if [[ "$2" =~ ^[0-9]+$ ]]; then
+		#log_this $2 "$3"
+	#else
+		#echo "invalid node number"
+	#fi
+elif [ "$1" = "stop" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		stop $2
+	else
+		for i in "${numbers[@]}"; do
+			stop $i &
+		done
+	fi
+elif [ "$1" = "start" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		start $2
+	else
+		for i in "${numbers[@]}"; do
+			start $i &
+		done
+	fi
+elif [ "$1" = "pause" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		pause $2
+	else
+		for i in "${numbers[@]}"; do
+			pause $i &
+		done
+	fi
+elif [ "$1" = "create" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		create $2
+	else
+		for i in "${numbers[@]}"; do
+			create $i &
+		done
+	fi
+elif [ "$1" = "resume" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		resume $2
+	else
+		for i in "${numbers[@]}"; do
+			resume $i &
+		done
+	fi
+elif [ "$1" = "restart" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		restart $2
+	else
+		for i in "${numbers[@]}"; do
+			restart $i &
+		done
+	fi
+elif [ "$1" = "check" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		check $2
+	else
+		for i in "${numbers[@]}"; do
+			check $i &
+		done
+	fi
+elif [ "$1" = "docker_status" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		docker_status $2
+	else
+		for i in "${numbers[@]}"; do
+			docker_status $i &
+		done
+	fi
+elif [ "$1" = "uptime" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		uptime $2
+	else
+		for i in "${numbers[@]}"; do
+			uptime $i &
+		done
+	fi
+elif [ "$1" = "check_logs" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		check_logs $2
+	else
+		for i in "${numbers[@]}"; do
+			check_logs $i &
+		done
+	fi
+elif [ "$1" = "size" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		size_worker $2
+	else
+		size
+	fi
+elif [ "$1" = "soft_restart" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		soft_restart $2
+	else
+		for i in "${numbers[@]}"; do
+			soft_restart $i
+		done
+	fi
+elif [ "$1" = "json" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		json $2
+	fi
+elif [ "$1" = "status" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		status $2
+	else
+		for i in "${numbers[@]}"; do
+			status $i
+		done
+		wait
+	fi
+else
+	echo "not sure what you want me to do"
+fi
