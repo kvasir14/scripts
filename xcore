@@ -140,7 +140,7 @@ stop_worker () {
 
 stop () {
 	#log_this $1 "stop: stopping $1"
-	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw stop_worker "$1" "$host"
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} stop_worker "$1" "$host"
 }
 
 pause () {
