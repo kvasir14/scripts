@@ -1,5 +1,13 @@
 #!/bin/bash
 
+
+publicip="$(cat /mnt/user/transcode/ip.txt)"
+passwd="$(cat /mnt/user/transcode/passwd.txt)" #passwd so scripts can run sudo commands on remote hosts. For SSH login, use ssh keys
+
+#create variable for /mnt/user/internxt/
+#create variable for /mnt/user/transcode/
+
+
 #read from file
 numbers=( )
 ids=( )
@@ -58,7 +66,11 @@ run_local_or_ssh () {
 	if [[ "$1" == "localhost" ]]; then
 		"${@:2}"
 	else
-		ssh "$1" "$(typeset -f $2); ${@:2}"
+		if [[ "$2" == "vim" ]]; then
+			ssh -t "$1" "$(typeset -f $2); ${@:2}"
+		else
+			ssh "$1" "$(typeset -f $2); ${@:2}"
+		fi
 	fi
 }
 
@@ -93,30 +105,54 @@ start (){
 	run_local_or_ssh ${hosts[$(get_index internxt$1)]} start_worker "$1" "${ids[$(get_index internxt$1)]}"
 }
 
-create_worker () {
+recreate_worker () {
 	docker pull portnumber53/internxt-core-daemon:latest
 	docker stop "$2"
 	docker rm "$2"
 	docker run -d --name $2 -p "$3":"$3" -v /mnt/user/internxt/node$1/data/:/data -v /mnt/user/internxt/node$1/appdata/:/home/money/.xcore/ portnumber53/internxt-core-daemon:latest
 }
 
-create () {
+recreate () {
 
-	run_local_or_ssh ${hosts[$(get_index internxt$1)]} create_worker $1 "${names[$(get_index internxt$1)]}" "${ports[$(get_index internxt$1)]}" "${ids[$(get_index internxt$1)]}"
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} recreate $1 "${names[$(get_index internxt$1)]}" "${ports[$(get_index internxt$1)]}" "${ids[$(get_index internxt$1)]}"
 	start $1
 	
 }
 
-init_worker () {
+first_run_worker () {
+	num="$1"
+	name="internxt$1"
+	host="$2"
+	port="$3"
+	publicip="$4"
+	passwd="$5"
+	folder="/mnt/user/internxt/node$num/"
 
-	docker exec -it internxt$1 xcore create --inxt 0x570D735FBea549Ebff09BF1BdA778145362018dA --storage /data/ --size 1TB --rpcaddress 24.253.229.106 --rpcport "$2"  --noedit
+	docker pull portnumber53/internxt-core-daemon:latest &>/dev/null
+	mkdir -p "$folder/data" "$folder/appdata" 
+	echo "$passwd" | sudo -k -S chmod 777 "$folder" -R &>/dev/null
+	docker stop "$name" &>/dev/null
+	docker rm "$name" &>/dev/null
+	docker run -d --name "$name" -p "$port":"$port" -v "$folder/data":/data -v "$folder/appdata":/home/money/.xcore/ portnumber53/internxt-core-daemon:latest &>/dev/null
+	output="$(docker exec -t "$name" xcore create --inxt 0x570D735FBea549Ebff09BF1BdA778145362018dA --storage /data/ --size 10TB --rpcaddress "$publicip" --rpcport "$port" --noedit)"
+	echo "$(echo $output | grep -Eoe '[A-Za-z0-9]{40}')"
+
+	
 }
 
-
-#this won't work without an existing port, which is difficult since arrays have to be same size
-init () {
-	run_local_or_ssh ${hosts[$(get_index internxt$1)]} init_worker $1 "${ports[$(get_index internxt$1)]}"
-	echo "ADD ID TO XCORE FILE AND RUN BINSYNC"
+first_run () {
+	port=$((12340+$1))
+	id="$(run_local_or_ssh $2 first_run_worker "$1" "$2" "$port" "$publicip" "$passwd")"
+	if [[ "$id" =~ ^[A-Za-z0-9]{40}$ ]]; then
+		echo "$1		$2		$id" >>  /mnt/user/transcode/internxt-api-keys.txt
+	fi
+	
+	numbers+=("$1")
+	hosts+=("$2")
+	ids+=("$id")
+	ports+=("$port")
+	names+=("internxt$1")
+	start $1
 
 }
 status_worker (){
@@ -363,6 +399,15 @@ soft_restart () {
 	
 }
 
+config () {
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw vim /mnt/user/internxt/node$1/appdata/configs/${ids[$(get_index internxt$1)]}.json
+}
+
+cat () {
+	run_local_or_ssh ${hosts[$(get_index internxt$1)]} raw cat /mnt/user/internxt/node$1/appdata/configs/${ids[$(get_index internxt$1)]}.json
+
+}
+
 #custom logging is outdated ever since I moved some of the nodes off main server
 log_this () {
 	folder="/mnt/user/internxt/node$1/appdata/mylogs"
@@ -444,12 +489,12 @@ elif [ "$1" = "pause" ]; then
 			pause $i &
 		done
 	fi
-elif [ "$1" = "create" ]; then
+elif [ "$1" = "recreate" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
-		create $2
+		recreate $2
 	else
 		for i in "${numbers[@]}"; do
-			create $i &
+			recreate $i &
 		done
 	fi
 elif [ "$1" = "resume" ]; then
@@ -517,6 +562,18 @@ elif [ "$1" = "soft_restart" ]; then
 elif [ "$1" = "json" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
 		json $2
+	fi
+elif [ "$1" = "first_run" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		first_run $2 $3
+	fi
+elif [ "$1" = "cat" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		cat $2 $3
+	fi
+elif [ "$1" = "config" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		config $2 $3
 	fi
 elif [ "$1" = "status" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then

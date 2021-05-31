@@ -39,7 +39,7 @@ for line in file:
 			count += 1
 			if temp > max:
 				max = temp
-			print(f"{device}:{temp}")
+			#print(f"{device}:{temp}")
 
 		json_body.append( 
 				{
@@ -63,13 +63,11 @@ print(f"max: {max}")
 client.write_points(json_body, database='hddtemp', time_precision='ms', batch_size=10000, protocol='json')
 
 
-
-
-
 exit()
 
-temp_values = 		[25, 30, 35, 40, 45]
-fan_speed_values = 	[20, 30, 35, 40, 45]
+
+temp_values = 		[0 , 32, 33, 34, 35, 36, 37, 38, 39]
+fan_speed_values = 	[25, 30, 35, 40, 45, 50, 55, 60, 65]
 if(len(temp_values) !=len(fan_speed_values)):
 	print("fan curve arrays different lengths")
 	exit()
@@ -79,7 +77,7 @@ temp = max
 for i in  range(len(temp_values)-1):
 	if temp_values[i] <= temp and temp < temp_values[i+1]:
 		speed= fan_speed_values[i]
-		output = subprocess.run(f"/mnt/user/transcode/bin/dasfans set %s" % (str(speed)), shell=True, stdout=subprocess.PIPE)
+		output = subprocess.run(f"/mnt/user/transcode/bin/dasfans %s" % (str(speed)), shell=True, stdout=subprocess.PIPE)
 		output = str(output.stdout)
 		output = output[2:len(output) -3]
 
