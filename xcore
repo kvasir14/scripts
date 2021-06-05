@@ -306,7 +306,6 @@ size_cluster_worker () {
 	return 0 #sucessful
 }
 
-
 size_new (){
 	sizetotal=0
 	oldsizetotal=0
@@ -325,6 +324,55 @@ size_new (){
 
 }
 
+json_size_worker (){
+	jsonstr=$(json $1)
+	# alt regex [0-9\.]+[KMGT]B but doesn't account for "..." 
+	jsonstr="$(echo "$jsonstr" | grep -Eoe \"shared\":\".+?,\"sharedPercent\" | grep -Eoe \":\".+?\",\")"
+	jsonstr="${jsonstr:3:-3}"
+	if [[ ! "$jsonstr" == "..." ]]; then
+		size="${jsonstr::-2}"
+		mult="${jsonstr: -2}"
+		#echo "$size"
+		if [[ "$mult" == "KB" ]]; then
+			size="$(echo "$size * 1000" | bc)"
+		elif [[ "$mult" == "MB" ]]; then
+			size="$(echo "$size * 1000 * 1000" | bc)"
+		elif [[ "$mult" == "GB" ]]; then
+			size="$(echo "$size * 1000 * 1000 * 1000" | bc)"
+		elif [[ "$mult" == "TB" ]]; then
+			size="$(echo "$size * 1000 * 1000 * 1000 * 1000" | bc)"
+		fi
+		#echo "$jsonstr"
+		printf "%.0f" "$size"
+		padded="$(printf "%02d\n" $1)"
+		curl -s -i -XPOST 'http://192.168.2.6:8086/write?db=internxt' --data-binary "size,host=internxt$padded,region=us-central,source=json value=$size"  > /dev/null
+	else
+		echo "0"
+	fi
+}
+
+json_size () {
+	sizetotal=0
+	oldsizetotal=0
+	sizetotalisgood=true;
+	for i in "${numbers[@]}"; do
+		size=0;
+		size="$(json_size_worker "$i")"
+		echo -e $i'\t'$size
+		oldsizetotal=$sizetotal
+		sizetotal=$((sizetotal+size))
+		if [[ $sizetotal -eq $oldsizetotal ]] || [[ $size -eq 0 ]] ; then
+			sizetotalisgood=false
+		fi
+	done
+	#wait
+
+	echo "$sizetotal"
+	echo "$sizetotalisgood"
+	if [ "$sizetotalisgood"  = true ]; then
+		curl -s -i -XPOST 'http://192.168.2.6:8086/write?db=internxt' --data-binary "size,host=total,region=us-central,source=json total=$sizetotal"  > /dev/null
+	fi
+}
 
 docker_status_worker () {
 	name="internxt$1"
@@ -477,6 +525,7 @@ elif [ "$1" = "stop" ]; then
 		for i in "${numbers[@]}"; do
 			stop $i &
 		done
+		wait
 	fi
 elif [ "$1" = "start" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -485,6 +534,7 @@ elif [ "$1" = "start" ]; then
 		for i in "${numbers[@]}"; do
 			start $i &
 		done
+		wait
 	fi
 elif [ "$1" = "pause" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -493,6 +543,7 @@ elif [ "$1" = "pause" ]; then
 		for i in "${numbers[@]}"; do
 			pause $i &
 		done
+		wait
 	fi
 elif [ "$1" = "recreate" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -501,6 +552,7 @@ elif [ "$1" = "recreate" ]; then
 		for i in "${numbers[@]}"; do
 			recreate $i &
 		done
+		wait
 	fi
 elif [ "$1" = "resume" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -509,6 +561,7 @@ elif [ "$1" = "resume" ]; then
 		for i in "${numbers[@]}"; do
 			resume $i &
 		done
+		wait
 	fi
 elif [ "$1" = "restart" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -517,6 +570,7 @@ elif [ "$1" = "restart" ]; then
 		for i in "${numbers[@]}"; do
 			restart $i &
 		done
+		wait
 	fi
 elif [ "$1" = "check" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -525,6 +579,7 @@ elif [ "$1" = "check" ]; then
 		for i in "${numbers[@]}"; do
 			check $i &
 		done
+		wait
 	fi
 elif [ "$1" = "docker_status" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -533,6 +588,7 @@ elif [ "$1" = "docker_status" ]; then
 		for i in "${numbers[@]}"; do
 			docker_status $i &
 		done
+		wait
 	fi
 elif [ "$1" = "uptime" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -541,6 +597,7 @@ elif [ "$1" = "uptime" ]; then
 		for i in "${numbers[@]}"; do
 			uptime $i &
 		done
+		wait
 	fi
 elif [ "$1" = "check_logs" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -549,6 +606,7 @@ elif [ "$1" = "check_logs" ]; then
 		for i in "${numbers[@]}"; do
 			check_logs $i &
 		done
+		wait
 	fi
 elif [ "$1" = "size" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -564,9 +622,19 @@ elif [ "$1" = "soft_restart" ]; then
 			soft_restart $i
 		done
 	fi
+elif [ "$1" = "json_size" ]; then
+	if [[ "$2" =~ ^[0-9]+$ ]]; then
+		json_size_worker $2
+	else
+		json_size
+	fi
 elif [ "$1" = "json" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
 		json $2
+	else
+		for i in "${numbers[@]}"; do
+			json $i
+		done
 	fi
 elif [ "$1" = "first_run" ]; then
 	if [[ "$2" =~ ^[0-9]+$ ]]; then
